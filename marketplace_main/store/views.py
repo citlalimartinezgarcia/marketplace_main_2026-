@@ -1,12 +1,20 @@
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import login, authenticate, logout
-from .forms import RegisterForm
+from django.contrib.auth.decorators import login_required
+from django.http import HttpResponseForbidden
+
+from .forms import RegisterForm, ProductForm
 from .models import Product
 
 
+# ==========================================
+# 🏠 Vistas Públicas y Autenticación
+# ==========================================
+
 def home(request):
+    # select_related y prefetch_related optimizan las consultas a la base de datos
     products = Product.objects.select_related('owner').prefetch_related('categories').all()
-    return render(request, 'marketplace/home.html', {'products': products})
+    return render(request, 'store/home.html', {'products': products})
 
 
 def register(request):
@@ -18,24 +26,97 @@ def register(request):
             return redirect('home')
     else:
         form = RegisterForm()
-
-    return render(request, 'marketplace/register.html', {'form': form})
+    return render(request, 'store/register.html', {'form': form})
 
 
 def login_view(request):
     if request.method == 'POST':
         username = request.POST.get('username')
         password = request.POST.get('password')
-
         user = authenticate(request, username=username, password=password)
-
+        
         if user:
             login(request, user)
             return redirect('home')
-
-    return render(request, 'marketplace/login.html')
+            
+    return render(request, 'store/login.html')
 
 
 def logout_view(request):
     logout(request)
     return redirect('home')
+
+
+# ==========================================
+# 📊 Panel de Control (Dashboard)
+# ==========================================
+
+@login_required
+def dashboard(request):
+    if not request.user.is_seller:
+        return HttpResponseForbidden("No tienes permisos de vendedor para acceder aquí.")
+
+    products = Product.objects.filter(owner=request.user)
+    return render(request, 'store/dashboard.html', {'products': products})
+
+
+# ==========================================
+# ➕ Productos: Crear
+# ==========================================
+
+@login_required
+def product_create(request):
+    if not request.user.is_seller:
+        return HttpResponseForbidden("Solo los vendedores pueden crear productos.")
+
+    form = ProductForm(request.POST or None)
+
+    if form.is_valid():
+        product = form.save(commit=False)
+        product.owner = request.user  # Asigna el usuario actual como dueño
+        product.save()
+        form.save_m2m()  # Obligatorio para guardar las categorías (ManytoMany)
+
+        return redirect('dashboard')
+
+    return render(request, 'store/product_form.html', {'form': form})
+
+
+# ==========================================
+# ✏️ Productos: Editar
+# ==========================================
+
+@login_required
+def product_update(request, pk):
+    product = get_object_or_404(Product, pk=pk)
+
+    # Seguridad: Evita que un vendedor edite productos de otro
+    if product.owner != request.user:
+        return HttpResponseForbidden("No tienes permiso para editar este producto.")
+
+    form = ProductForm(request.POST or None, instance=product)
+
+    if form.is_valid():
+        form.save()
+        return redirect('dashboard')
+
+    return render(request, 'store/product_form.html', {'form': form})
+
+
+# ==========================================
+# 🗑️ Productos: Eliminar
+# ==========================================
+
+@login_required
+def product_delete(request, pk):
+    product = get_object_or_404(Product, pk=pk)
+
+    # Seguridad: Evita que un vendedor elimine productos de otro
+    if product.owner != request.user:
+        return HttpResponseForbidden("No tienes permiso para eliminar este producto.")
+
+    if request.method == 'POST':
+        product.delete()
+        return redirect('dashboard')
+
+    return render(request, 'store/product_confirm_delete.html', {'product': product})
